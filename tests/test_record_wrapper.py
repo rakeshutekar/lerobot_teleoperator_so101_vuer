@@ -14,10 +14,11 @@ def test_record_wrapper_refuses_without_a_camera_map(tmp_path):
     assert "cameras.json" in result.stderr
 
 
-def test_record_wrapper_command_carries_every_contract_value():
+def test_record_wrapper_command_carries_every_contract_value(tmp_path):
+    (tmp_path / "cameras.json").write_text('{"front": 11, "side": 22, "wrist": 33}')
     result = subprocess.run(
         [sys.executable, str(REPO / "record_pour.py"), "--print-command"],
-        capture_output=True, text=True, cwd=REPO,
+        capture_output=True, text=True, cwd=tmp_path,
     )
     assert result.returncode == 0, result.stderr
     command = result.stdout
@@ -33,5 +34,6 @@ def test_record_wrapper_command_carries_every_contract_value():
         "--dataset.push_to_hub=false",
         "--fps=30",
         "front:", "side:", "wrist:",
+        "index_or_path: 11", "index_or_path: 22", "index_or_path: 33",
     ):
         assert required in command, f"missing {required}"
