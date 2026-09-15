@@ -36,3 +36,44 @@ def test_no_checkpoints_at_all_is_a_clear_error(tmp_path):
     (tmp_path / "checkpoints").mkdir()
     with pytest.raises(FileNotFoundError, match="No checkpoints"):
         resolve_checkpoint(tmp_path)
+
+
+def test_dangling_last_symlink_falls_back_to_highest_step(tmp_path):
+    run = make_run(tmp_path, [20000, 40000])
+    link = run / "checkpoints" / "last"
+    link.symlink_to(run / "checkpoints" / "999999", target_is_directory=True)
+    assert resolve_checkpoint(run) == run / "checkpoints" / "040000" / "pretrained_model"
+
+
+def test_last_symlink_without_pretrained_model_falls_back_to_highest_step(tmp_path):
+    run = make_run(tmp_path, [20000, 40000])
+    # Create a directory for last to point to, but without pretrained_model
+    (run / "checkpoints" / "incomplete").mkdir()
+    link = run / "checkpoints" / "last"
+    link.symlink_to(run / "checkpoints" / "incomplete", target_is_directory=True)
+    assert resolve_checkpoint(run) == run / "checkpoints" / "040000" / "pretrained_model"
+
+
+def test_non_numeric_entries_ignored(tmp_path):
+    run = make_run(tmp_path, [20000, 40000])
+    # Add non-numeric entries that should be ignored
+    (run / "checkpoints" / "tmp").mkdir()
+    (run / "checkpoints" / "README.txt").touch()
+    assert resolve_checkpoint(run) == run / "checkpoints" / "040000" / "pretrained_model"
+
+
+def test_missing_output_dir_is_a_clear_error(tmp_path):
+    nonexistent = tmp_path / "does_not_exist"
+    with pytest.raises(FileNotFoundError, match="No checkpoints directory"):
+        resolve_checkpoint(nonexistent)
+
+
+def test_unpadded_step_resolves_to_padded_directory(tmp_path):
+    run = make_run(tmp_path, [20000, 40000])
+    assert resolve_checkpoint(run, "20000") == run / "checkpoints" / "020000" / "pretrained_model"
+
+
+def test_non_numeric_step_is_a_clear_error(tmp_path):
+    run = make_run(tmp_path, [20000, 40000])
+    with pytest.raises(ValueError, match="not a valid checkpoint step"):
+        resolve_checkpoint(run, "invalid")
