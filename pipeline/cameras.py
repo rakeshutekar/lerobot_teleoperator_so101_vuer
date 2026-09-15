@@ -21,6 +21,10 @@ def load_camera_map(path: str | Path) -> dict[str, int | str]:
         ) from error
     except json.JSONDecodeError as error:
         raise ValueError(f"Camera map '{path}' is not valid JSON: {error}") from error
+    except UnicodeDecodeError as error:
+        raise ValueError(f"Camera map '{path}' is not valid UTF-8: {error}") from error
+    except OSError as error:
+        raise OSError(f"Cannot read camera map at '{path}': {error}") from error
     if not isinstance(camera_map, dict):
         raise ValueError(f"Camera map '{path}' must be a JSON object, got {type(camera_map).__name__}")
     return camera_map

@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -37,3 +38,35 @@ def test_load_camera_map_reads_json(tmp_path):
 def test_load_camera_map_error_names_the_file(tmp_path):
     with pytest.raises(FileNotFoundError, match="cameras.json"):
         load_camera_map(tmp_path / "cameras.json")
+
+
+def test_load_camera_map_rejects_non_dict_json(tmp_path):
+    path = tmp_path / "cameras.json"
+    path.write_text(json.dumps([0, 1, 2]))
+    with pytest.raises(ValueError, match="must be a JSON object"):
+        load_camera_map(path)
+
+
+def test_load_camera_map_rejects_unreadable_file(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("Running as root, cannot test permission denied")
+    path = tmp_path / "cameras.json"
+    path.write_text(json.dumps({"front": 0, "side": 1, "wrist": 2}))
+    path.chmod(0o000)
+    try:
+        with pytest.raises(OSError, match="Cannot read camera map"):
+            load_camera_map(path)
+    finally:
+        path.chmod(0o644)
+
+
+def test_load_camera_map_rejects_directory(tmp_path):
+    with pytest.raises(OSError, match="Cannot read camera map"):
+        load_camera_map(tmp_path)
+
+
+def test_load_camera_map_rejects_non_utf8(tmp_path):
+    path = tmp_path / "cameras.json"
+    path.write_bytes(b"\xff\xfe")
+    with pytest.raises(ValueError, match="not valid UTF-8"):
+        load_camera_map(path)
