@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Record pouring demonstrations: lerobot-record driven by the Quest teleoperator.
 
-Same safety envelope as run_quest.py (gains, 3 deg/tick cap, torque held at exit).
+Same safety envelope as run_quest.py: servo gains, a 3 deg/tick cap, torque held at
+exit, and the teleoperator seeded from the arm's measured pose so it holds still until
+you clutch in.
+
 Keys during recording: right arrow ends the episode, left arrow re-records it,
 escape stops the session.
 
@@ -13,7 +16,7 @@ import sys
 from pathlib import Path
 
 from pipeline.cameras import build_cameras_arg, load_camera_map
-from run_quest import apply_gains
+from pipeline.hooks import install_gains, install_noninteractive_connect, install_teleop_seeding
 
 HERE = Path(__file__).resolve().parent
 ARM_REPO = HERE.parent / "robot-arm"
@@ -48,32 +51,6 @@ def build_command(port: str, camera_map_path: Path) -> list[str]:
     return [*DEFAULT_ARGS, f"--robot.port={port}", f"--robot.cameras={cameras}"]
 
 
-def apply_gains_before_recording(port: str) -> None:
-    """Connect once, apply the arm's servo gains, then disconnect with torque held.
-
-    lerobot-record's own robot.connect() has no hook for this, so we do it as a
-    separate pre-step using the identical robot config the recording command uses.
-    disable_torque_on_disconnect=False means the disconnect below leaves torque on.
-    """
-    from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
-    from lerobot.robots.so_follower.so_follower import SOFollower
-
-    robot = SOFollower(
-        SOFollowerRobotConfig(
-            port=port,
-            id="so101_follower",
-            calibration_dir=HERE / "calibration",
-            max_relative_target=3,
-            disable_torque_on_disconnect=False,
-        )
-    )
-    robot.connect()
-    try:
-        apply_gains(robot)
-    finally:
-        robot.disconnect()
-
-
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     argv = sys.argv[1:]
@@ -89,7 +66,9 @@ def main() -> None:
         print(" ".join(command))
         return
 
-    apply_gains_before_recording(port)
+    install_noninteractive_connect()
+    install_gains()
+    install_teleop_seeding()
 
     from lerobot.scripts import lerobot_record as lr
 
