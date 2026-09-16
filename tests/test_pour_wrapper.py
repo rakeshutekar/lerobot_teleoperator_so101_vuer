@@ -1,5 +1,7 @@
 import logging
+import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -97,6 +99,65 @@ def test_the_arm_is_parked_even_when_the_rollout_raises(tmp_path):
         pour.run_rollout_and_park(raising_rollout, sys.executable, park_script)
 
     assert parked.read_text() == "yes"
+
+
+def test_parking_finishes_even_when_the_operator_interrupts_again(tmp_path, caplog):
+    """lerobot-rollout leaves a handler installed that sys.exit(1)s on the second signal.
+
+    In-process, that handler is still live while we park, so a second Ctrl-C would raise
+    SystemExit inside the parking step and abandon a raised arm under torque.
+    """
+    parked = tmp_path / "parked"
+    park_script = tmp_path / "interrupted_park.py"
+    park_script.write_text(
+        "import os, signal, time\n"
+        "from pathlib import Path\n"
+        "os.kill(os.getppid(), signal.SIGINT)\n"  # the operator hammers Ctrl-C mid-park
+        "time.sleep(0.5)\n"
+        f"Path({str(parked)!r}).write_text('yes')\n"
+    )
+
+    def lerobot_force_exit(signum, frame):
+        sys.exit(1)
+
+    previous = signal.signal(signal.SIGINT, lerobot_force_exit)
+    try:
+        with caplog.at_level(logging.WARNING, logger="pour"):
+            exit_code = pour.run_rollout_and_park(lambda: 0, sys.executable, park_script)
+        assert signal.getsignal(signal.SIGINT) is lerobot_force_exit, "handler not restored"
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+    assert parked.read_text() == "yes", "parking was abandoned"
+    assert exit_code == 0
+    assert "held off" in caplog.text
+
+
+def test_the_parking_child_is_out_of_reach_of_a_terminal_interrupt(tmp_path):
+    """A terminal Ctrl-C goes to the foreground process group; parking must not be in it."""
+    session = tmp_path / "session"
+    script = tmp_path / "report_session.py"
+    script.write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        f"Path({str(session)!r}).write_text(str(os.getsid(0)))\n"
+    )
+
+    assert pour.run_subprocess([sys.executable, str(script)], "probe") == 0
+    assert session.read_text() != str(os.getsid(0))
+
+
+def test_an_abandoned_park_is_as_loud_as_a_failed_one(tmp_path, caplog, monkeypatch):
+    """Whatever stops parking, the operator must be told the arm may still be raised."""
+    def refuse_to_park(command, label):
+        raise SystemExit(1)
+
+    monkeypatch.setattr(pour, "run_subprocess", refuse_to_park)
+
+    with caplog.at_level(logging.ERROR, logger="pour"), pytest.raises(SystemExit):
+        pour.park_arm(sys.executable, tmp_path / "unused.py")
+
+    assert "estop_so101.py" in caplog.text and "raised" in caplog.text
 
 
 def test_rollout_runs_in_process_and_passes_its_arguments_through(monkeypatch):
