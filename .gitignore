@@ -213,3 +213,6 @@ __marimo__/
 *.egg-info/
 
 *.pem
+.superpowers/
+datasets/
+outputs/
