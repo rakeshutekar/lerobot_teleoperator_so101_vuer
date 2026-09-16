@@ -11,23 +11,24 @@ import argparse
 import logging
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from pipeline.cameras import build_cameras_arg, load_camera_map
 from pipeline.checkpoints import resolve_checkpoint
-from run_quest import apply_gains
+from pipeline.hooks import install_gains, install_noninteractive_connect
 
 HERE = Path(__file__).resolve().parent
 ARM_REPO = HERE.parent / "robot-arm"
 TASK = "pour from the bottle into the cup"
 JOB = "pour_v1"
+DEFAULT_FPS = 30
 logger = logging.getLogger(__name__)
 
 
-def build_command(checkpoint: Path, port: str, cameras: str, duration: int) -> list[str]:
+def build_command(checkpoint: Path, port: str, cameras: str, duration: int, fps: int) -> list[str]:
     """Assemble the lerobot-rollout CLI args for one base-mode deployment run."""
     return [
-        str(ARM_REPO / ".venv/bin/lerobot-rollout"),
         "--strategy.type=base",
         f"--policy.path={checkpoint}",
         "--robot.type=so101_follower",
@@ -39,33 +40,36 @@ def build_command(checkpoint: Path, port: str, cameras: str, duration: int) -> l
         f"--robot.cameras={cameras}",
         f"--task={TASK}",
         f"--duration={duration}",
+        f"--fps={fps}",
     ]
 
 
-def apply_gains_before_rollout(port: str) -> None:
-    """Connect once, apply the arm's servo gains, then disconnect with torque held.
+def run_rollout(command: list[str]) -> int:
+    """Run lerobot-rollout in THIS process and return an exit code.
 
-    lerobot-rollout's own robot.connect() has no hook for this, so we do it as a
-    separate pre-step using the identical robot config the rollout command uses.
-    disable_torque_on_disconnect=False means the disconnect below leaves torque on.
+    In-process is what lets the gain and connect hooks reach the robot LeRobot builds,
+    and it keeps an interrupt inside our own try/finally, so parking still happens
+    instead of the rollout being killed out from under us.
     """
-    from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
-    from lerobot.robots.so_follower.so_follower import SOFollower
+    from lerobot.scripts import lerobot_rollout
 
-    robot = SOFollower(
-        SOFollowerRobotConfig(
-            port=port,
-            id="so101_follower",
-            calibration_dir=HERE / "calibration",
-            max_relative_target=3,
-            disable_torque_on_disconnect=False,
-        )
-    )
-    robot.connect()
+    sys.argv = [sys.argv[0], *command]
     try:
-        apply_gains(robot)
-    finally:
-        robot.disconnect()
+        lerobot_rollout.main()
+    except KeyboardInterrupt:
+        logger.info("rollout interrupted")
+        return 130
+    except SystemExit as error:
+        if error.code is None:
+            return 0
+        if isinstance(error.code, int):
+            return error.code
+        logger.error("rollout exited: %s", error.code)
+        return 1
+    except Exception:
+        logger.exception("rollout failed")
+        return 1
+    return 0
 
 
 def run_subprocess(command: list[str], label: str) -> int:
@@ -90,11 +94,11 @@ def park_arm(park_python: str, park_script: Path) -> int:
     return returncode
 
 
-def run_rollout_and_park(command: list[str], park_python: str, park_script: Path) -> int:
+def run_rollout_and_park(rollout: Callable[[], int], park_python: str, park_script: Path) -> int:
     """Run the rollout, always park afterwards, and fail loudly if either step failed."""
     rollout_returncode = 1
     try:
-        rollout_returncode = run_subprocess(command, "lerobot-rollout")
+        rollout_returncode = rollout()
     finally:
         logger.info("parking")
         park_returncode = park_arm(park_python, park_script)
@@ -107,7 +111,14 @@ def main() -> None:
     parser.add_argument("--checkpoint", default=None, help="step number, e.g. 040000")
     parser.add_argument("--port", default="/dev/cu.usbmodem")
     parser.add_argument("--duration", type=int, default=60, help="hard time limit, seconds")
-    parser.add_argument("--print-command", action="store_true")
+    parser.add_argument(
+        "--fps", type=int, default=DEFAULT_FPS,
+        help=f"control rate; must match the rate the policy was recorded at (default {DEFAULT_FPS})",
+    )
+    parser.add_argument(
+        "--print-command", action="store_true",
+        help="print the rollout arguments and exit, touching no hardware",
+    )
     args = parser.parse_args()
 
     try:
@@ -117,15 +128,16 @@ def main() -> None:
         print(str(error), file=sys.stderr)
         raise SystemExit(2) from error
 
-    command = build_command(checkpoint, args.port, cameras, args.duration)
+    command = build_command(checkpoint, args.port, cameras, args.duration, args.fps)
     if args.print_command:
         print(" ".join(command))
         return
 
     logger.info("policy: %s", checkpoint)
-    apply_gains_before_rollout(args.port)
+    install_noninteractive_connect()
+    install_gains()
     exit_code = run_rollout_and_park(
-        command, str(ARM_REPO / ".venv/bin/python"), HERE / "park.py"
+        lambda: run_rollout(command), str(ARM_REPO / ".venv/bin/python"), HERE / "park.py"
     )
     if exit_code != 0:
         raise SystemExit(exit_code)

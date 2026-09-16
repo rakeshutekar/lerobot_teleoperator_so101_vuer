@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 import pour
 
 REPO = Path(__file__).resolve().parents[1]
@@ -61,10 +63,9 @@ def test_park_failure_is_loud_and_fails_the_run(tmp_path, caplog):
     """A parking failure must be reported and must make the overall run fail."""
     park_script = tmp_path / "fake_park.py"
     park_script.write_text("import sys\nsys.exit(1)\n")
-    rollout_ok = [sys.executable, "-c", "import sys; sys.exit(0)"]
 
     with caplog.at_level(logging.ERROR, logger="pour"):
-        exit_code = pour.run_rollout_and_park(rollout_ok, sys.executable, park_script)
+        exit_code = pour.run_rollout_and_park(lambda: 0, sys.executable, park_script)
 
     assert exit_code != 0
     assert any(
@@ -77,11 +78,59 @@ def test_successful_park_does_not_mask_a_rollout_failure(tmp_path):
     """A rollout failure must still fail the run even when parking succeeds."""
     park_script = tmp_path / "fake_park_ok.py"
     park_script.write_text("import sys\nsys.exit(0)\n")
-    rollout_failing = [sys.executable, "-c", "import sys; sys.exit(3)"]
 
-    exit_code = pour.run_rollout_and_park(rollout_failing, sys.executable, park_script)
+    exit_code = pour.run_rollout_and_park(lambda: 3, sys.executable, park_script)
 
     assert exit_code != 0
+
+
+def test_the_arm_is_parked_even_when_the_rollout_raises(tmp_path):
+    """Parking is the last line of defence, so it must survive an exception too."""
+    parked = tmp_path / "parked"
+    park_script = tmp_path / "marker_park.py"
+    park_script.write_text(f"from pathlib import Path\nPath({str(parked)!r}).write_text('yes')\n")
+
+    def raising_rollout() -> int:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        pour.run_rollout_and_park(raising_rollout, sys.executable, park_script)
+
+    assert parked.read_text() == "yes"
+
+
+def test_rollout_runs_in_process_and_passes_its_arguments_through(monkeypatch):
+    """In-process is what lets the gain hooks reach the robot lerobot-rollout builds."""
+    from lerobot.scripts import lerobot_rollout
+
+    seen = []
+    monkeypatch.setattr(sys, "argv", ["pour.py"])
+    monkeypatch.setattr(lerobot_rollout, "main", lambda: seen.append(sys.argv[1:]))
+
+    assert pour.run_rollout(["--fps=15", "--duration=60"]) == 0
+    assert seen == [["--fps=15", "--duration=60"]]
+
+
+def test_an_interrupted_rollout_becomes_an_exit_code_so_parking_still_runs(monkeypatch):
+    """The rollout used to be a child process that was SIGKILLed before teardown finished."""
+    from lerobot.scripts import lerobot_rollout
+
+    def interrupted():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(sys, "argv", ["pour.py"])
+    monkeypatch.setattr(lerobot_rollout, "main", interrupted)
+
+    assert pour.run_rollout([]) == 130
+
+
+def test_the_deploy_rate_defaults_to_thirty_and_can_be_set(tmp_path):
+    """A policy trained at 30 Hz must not be deployed at whatever the rollout defaults to."""
+    (tmp_path / "outputs/train/pour_v1/checkpoints/040000/pretrained_model").mkdir(parents=True)
+    (tmp_path / "cameras.json").write_text('{"front": 0, "side": 1, "wrist": 2}')
+
+    assert "--fps=30" in run_wrapper([], tmp_path).stdout
+    assert "--fps=15" in run_wrapper(["--fps", "15"], tmp_path).stdout
 
 
 def test_robot_config_and_camera_args_match_between_pour_and_record(tmp_path):
