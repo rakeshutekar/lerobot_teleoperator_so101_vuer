@@ -1,12 +1,12 @@
 """Build LeRobot's --robot.cameras argument from a saved device map.
 
 The three camera names are a contract between recording and deployment: a policy
-trained on `front`, `side` and `wrist` must be given those same names at rollout.
+trained on `wrist`, `front` and `overhead` must be given those same names at rollout.
 """
 import json
 from pathlib import Path
 
-CAMERA_NAMES: tuple[str, str, str] = ("front", "side", "wrist")
+CAMERA_NAMES: tuple[str, str, str] = ("wrist", "front", "overhead")
 
 
 def load_camera_map(path: str | Path) -> dict[str, int | str]:
@@ -17,7 +17,7 @@ def load_camera_map(path: str | Path) -> dict[str, int | str]:
     except FileNotFoundError as error:
         raise FileNotFoundError(
             f"No camera map at '{path}'. Run lerobot-find-cameras and write it, e.g. "
-            '{"front": 0, "side": 1, "wrist": 2}'
+            '{"wrist": 0, "front": 1, "overhead": 2}'
         ) from error
     except json.JSONDecodeError as error:
         raise ValueError(f"Camera map '{path}' is not valid JSON: {error}") from error
