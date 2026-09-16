@@ -68,6 +68,39 @@ def apply_gains_before_rollout(port: str) -> None:
         robot.disconnect()
 
 
+def run_subprocess(command: list[str], label: str) -> int:
+    """Run a subprocess and return its exit code; a failure to launch it counts as failure."""
+    try:
+        result = subprocess.run(command, check=False)
+        return result.returncode
+    except OSError as error:
+        logger.error("failed to launch %s: %s", label, error)
+        return 1
+
+
+def park_arm(park_python: str, park_script: Path) -> int:
+    """Run park.py and, if it fails, say plainly that the arm may still be raised."""
+    returncode = run_subprocess([park_python, str(park_script)], "park.py")
+    if returncode != 0:
+        logger.error(
+            "park.py failed (exit %d); the arm may still be raised and under torque. "
+            "Run estop_so101.py in the robot-arm repo to release torque, then retry park.py.",
+            returncode,
+        )
+    return returncode
+
+
+def run_rollout_and_park(command: list[str], park_python: str, park_script: Path) -> int:
+    """Run the rollout, always park afterwards, and fail loudly if either step failed."""
+    rollout_returncode = 1
+    try:
+        rollout_returncode = run_subprocess(command, "lerobot-rollout")
+    finally:
+        logger.info("parking")
+        park_returncode = park_arm(park_python, park_script)
+    return park_returncode if park_returncode != 0 else rollout_returncode
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
@@ -91,11 +124,11 @@ def main() -> None:
 
     logger.info("policy: %s", checkpoint)
     apply_gains_before_rollout(args.port)
-    try:
-        subprocess.run(command, check=False)
-    finally:
-        logger.info("parking")
-        subprocess.run([str(ARM_REPO / ".venv/bin/python"), str(HERE / "park.py")], check=False)
+    exit_code = run_rollout_and_park(
+        command, str(ARM_REPO / ".venv/bin/python"), HERE / "park.py"
+    )
+    if exit_code != 0:
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

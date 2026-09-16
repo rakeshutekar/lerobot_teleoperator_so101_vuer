@@ -1,6 +1,10 @@
+import logging
+import re
 import subprocess
 import sys
 from pathlib import Path
+
+import pour
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -10,6 +14,12 @@ def run_wrapper(args, cwd):
         [sys.executable, str(REPO / "pour.py"), "--print-command", *args],
         capture_output=True, text=True, cwd=cwd,
     )
+
+
+def robot_config_flags(command: str) -> set[str]:
+    """Pull out the printed command's --robot.* flags, cameras arg included whole."""
+    segments = re.split(r" (?=--)", command.strip())
+    return {segment for segment in segments if segment.startswith("--robot.")}
 
 
 def test_command_uses_the_resolved_checkpoint_and_contract_values(tmp_path):
@@ -45,3 +55,48 @@ def test_missing_training_output_fails_with_a_clear_message(tmp_path):
     result = run_wrapper([], tmp_path)
     assert result.returncode != 0
     assert "checkpoints" in result.stderr.lower()
+
+
+def test_park_failure_is_loud_and_fails_the_run(tmp_path, caplog):
+    """A parking failure must be reported and must make the overall run fail."""
+    park_script = tmp_path / "fake_park.py"
+    park_script.write_text("import sys\nsys.exit(1)\n")
+    rollout_ok = [sys.executable, "-c", "import sys; sys.exit(0)"]
+
+    with caplog.at_level(logging.ERROR, logger="pour"):
+        exit_code = pour.run_rollout_and_park(rollout_ok, sys.executable, park_script)
+
+    assert exit_code != 0
+    assert any(
+        "estop_so101.py" in record.message and "raised" in record.message
+        for record in caplog.records
+    ), caplog.text
+
+
+def test_successful_park_does_not_mask_a_rollout_failure(tmp_path):
+    """A rollout failure must still fail the run even when parking succeeds."""
+    park_script = tmp_path / "fake_park_ok.py"
+    park_script.write_text("import sys\nsys.exit(0)\n")
+    rollout_failing = [sys.executable, "-c", "import sys; sys.exit(3)"]
+
+    exit_code = pour.run_rollout_and_park(rollout_failing, sys.executable, park_script)
+
+    assert exit_code != 0
+
+
+def test_robot_config_and_camera_args_match_between_pour_and_record(tmp_path):
+    """pour.py and record_pour.py must run the arm under the identical configuration."""
+    (tmp_path / "cameras.json").write_text('{"front": 0, "side": 1, "wrist": 2}')
+    run = tmp_path / "outputs/train/pour_v1/checkpoints/040000/pretrained_model"
+    run.mkdir(parents=True)
+
+    pour_command = run_wrapper([], tmp_path).stdout
+    record_command = subprocess.run(
+        [sys.executable, str(REPO / "record_pour.py"), "--print-command"],
+        capture_output=True, text=True, cwd=tmp_path,
+    ).stdout
+
+    pour_flags = robot_config_flags(pour_command)
+    record_flags = robot_config_flags(record_command)
+    assert pour_flags, "pour.py printed no --robot.* flags"
+    assert pour_flags == record_flags
