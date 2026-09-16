@@ -215,3 +215,4 @@ __marimo__/
 *.pem
 .superpowers/
 datasets/
+outputs/
