@@ -29,7 +29,7 @@ def robot_config_flags(command: str) -> set[str]:
 def test_command_uses_the_resolved_checkpoint_and_contract_values(tmp_path):
     run = tmp_path / "outputs/train/pour_v1/checkpoints/040000/pretrained_model"
     run.mkdir(parents=True)
-    (tmp_path / "cameras.json").write_text('{"front": 0, "side": 1, "wrist": 2}')
+    (tmp_path / "cameras.json").write_text('{"front": 0, "overhead": 1, "wrist": 2}')
     result = run_wrapper([], tmp_path)
     assert result.returncode == 0, result.stderr
     command = result.stdout
@@ -40,7 +40,7 @@ def test_command_uses_the_resolved_checkpoint_and_contract_values(tmp_path):
         "--robot.max_relative_target=3",
         "--task=pour from the bottle into the cup",
         "--duration=",
-        "front:", "side:", "wrist:",
+        "front:", "overhead:", "wrist:",
     ):
         assert required in command, f"missing {required}"
 
@@ -48,14 +48,14 @@ def test_command_uses_the_resolved_checkpoint_and_contract_values(tmp_path):
 def test_explicit_checkpoint_is_honoured(tmp_path):
     for step in ("020000", "040000"):
         (tmp_path / f"outputs/train/pour_v1/checkpoints/{step}/pretrained_model").mkdir(parents=True)
-    (tmp_path / "cameras.json").write_text('{"front": 0, "side": 1, "wrist": 2}')
+    (tmp_path / "cameras.json").write_text('{"front": 0, "overhead": 1, "wrist": 2}')
     result = run_wrapper(["--checkpoint", "020000"], tmp_path)
     assert "020000/pretrained_model" in result.stdout
     assert "040000" not in result.stdout
 
 
 def test_missing_training_output_fails_with_a_clear_message(tmp_path):
-    (tmp_path / "cameras.json").write_text('{"front": 0, "side": 1, "wrist": 2}')
+    (tmp_path / "cameras.json").write_text('{"front": 0, "overhead": 1, "wrist": 2}')
     result = run_wrapper([], tmp_path)
     assert result.returncode != 0
     assert "checkpoints" in result.stderr.lower()
@@ -188,7 +188,7 @@ def test_an_interrupted_rollout_becomes_an_exit_code_so_parking_still_runs(monke
 def test_the_deploy_rate_defaults_to_thirty_and_can_be_set(tmp_path):
     """A policy trained at 30 Hz must not be deployed at whatever the rollout defaults to."""
     (tmp_path / "outputs/train/pour_v1/checkpoints/040000/pretrained_model").mkdir(parents=True)
-    (tmp_path / "cameras.json").write_text('{"front": 0, "side": 1, "wrist": 2}')
+    (tmp_path / "cameras.json").write_text('{"front": 0, "overhead": 1, "wrist": 2}')
 
     assert "--fps=30" in run_wrapper([], tmp_path).stdout
     assert "--fps=15" in run_wrapper(["--fps", "15"], tmp_path).stdout
@@ -196,7 +196,7 @@ def test_the_deploy_rate_defaults_to_thirty_and_can_be_set(tmp_path):
 
 def test_robot_config_and_camera_args_match_between_pour_and_record(tmp_path):
     """pour.py and record_pour.py must run the arm under the identical configuration."""
-    (tmp_path / "cameras.json").write_text('{"front": 0, "side": 1, "wrist": 2}')
+    (tmp_path / "cameras.json").write_text('{"front": 0, "overhead": 1, "wrist": 2}')
     run = tmp_path / "outputs/train/pour_v1/checkpoints/040000/pretrained_model"
     run.mkdir(parents=True)
 
